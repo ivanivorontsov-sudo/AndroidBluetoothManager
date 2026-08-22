@@ -13,19 +13,15 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.usb.UsbConstants
-import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.media.AudioManager
-import android.media.audiofx.Equalizer
 import android.os.Build
 import android.os.Bundle
-import android.os.ParcelUuid
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -108,8 +104,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/* ===================== DATA ===================== */
-
 data class BtDeviceInfo(
     val name: String,
     val address: String,
@@ -150,15 +144,13 @@ data class UiState(
     val statusMessage: String = ""
 )
 
-/* ===================== VIEWMODEL ===================== */
-
 class DeviceViewModel : ViewModel() {
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     private var bluetoothAdapter: BluetoothAdapter? = null
-    private var context: Context? = null
+    private var appContext: Context? = null
     private var a2dpProxy: BluetoothProfile? = null
     private var headsetProxy: BluetoothProfile? = null
 
@@ -180,15 +172,13 @@ class DeviceViewModel : ViewModel() {
                 BluetoothDevice.ACTION_BOND_STATE_CHANGED,
                 BluetoothAdapter.ACTION_STATE_CHANGED,
                 UsbManager.ACTION_USB_DEVICE_ATTACHED,
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    refreshAll()
-                }
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> refreshAll()
             }
         }
     }
 
     fun init(ctx: Context) {
-        context = ctx.applicationContext
+        appContext = ctx.applicationContext
         val bm = ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bm.adapter
 
@@ -204,20 +194,13 @@ class DeviceViewModel : ViewModel() {
         }
         ContextCompat.registerReceiver(ctx, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
 
-        // Profile proxies for connection state + control
         bluetoothAdapter?.getProfileProxy(ctx, object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                when (profile) {
-                    BluetoothProfile.A2DP -> a2dpProxy = proxy
-                    BluetoothProfile.HEADSET -> headsetProxy = proxy
-                }
+                if (profile == BluetoothProfile.A2DP) a2dpProxy = proxy
                 refreshBluetooth()
             }
             override fun onServiceDisconnected(profile: Int) {
-                when (profile) {
-                    BluetoothProfile.A2DP -> a2dpProxy = null
-                    BluetoothProfile.HEADSET -> headsetProxy = null
-                }
+                if (profile == BluetoothProfile.A2DP) a2dpProxy = null
             }
         }, BluetoothProfile.A2DP)
 
@@ -242,7 +225,7 @@ class DeviceViewModel : ViewModel() {
     @SuppressLint("MissingPermission")
     fun refreshBluetooth() {
         viewModelScope.launch {
-            val ctx = context ?: return@launch
+            val ctx = appContext ?: return@launch
             val adapter = bluetoothAdapter
             val hasPerms = checkBtPermissions(ctx)
             val enabled = adapter?.isEnabled == true
@@ -267,18 +250,14 @@ class DeviceViewModel : ViewModel() {
             }.sortedWith(compareByDescending<BtDeviceInfo> { it.isConnected }.thenBy { it.name })
 
             _uiState.update {
-                it.copy(
-                    btDevices = devices,
-                    bluetoothEnabled = enabled,
-                    hasBtPermissions = true
-                )
+                it.copy(btDevices = devices, bluetoothEnabled = enabled, hasBtPermissions = true)
             }
         }
     }
 
     fun refreshUsb() {
         viewModelScope.launch {
-            val ctx = context ?: return@launch
+            val ctx = appContext ?: return@launch
             val usbManager = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
             val list = usbManager.deviceList.values.map { dev ->
                 UsbDeviceInfo(
@@ -309,8 +288,7 @@ class DeviceViewModel : ViewModel() {
 
         val major = try { device.bluetoothClass?.majorDeviceClass ?: 0 } catch (_: Exception) { 0 }
         val classStr = try {
-            val c = device.bluetoothClass
-            when (c?.majorDeviceClass) {
+            when (device.bluetoothClass?.majorDeviceClass) {
                 BluetoothClass.Device.Major.AUDIO_VIDEO -> "Аудио / Наушники"
                 BluetoothClass.Device.Major.PHONE -> "Телефон"
                 BluetoothClass.Device.Major.COMPUTER -> "Компьютер"
@@ -322,21 +300,20 @@ class DeviceViewModel : ViewModel() {
             }
         } catch (_: Exception) { "—" }
 
-        val battery = tryGetBatteryLevel(device)
-
         return BtDeviceInfo(
             name = name,
             address = device.address,
             isConnected = isConnected,
             isBonded = bonded,
-            batteryLevel = battery,
+            batteryLevel = tryGetBatteryLevel(device),
             deviceClass = classStr,
             majorClass = major,
             uuids = uuids,
             icon = iconForMajor(major),
-            type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2 &&
-                try { device.type == BluetoothDevice.DEVICE_TYPE_LE } catch (_: Exception) { false }
-            ) "BLE" else "Classic"
+            type = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2 &&
+                    device.type == BluetoothDevice.DEVICE_TYPE_LE) "BLE" else "Classic"
+            } catch (_: Exception) { "Classic" }
         )
     }
 
@@ -365,13 +342,10 @@ class DeviceViewModel : ViewModel() {
 
     private fun tryGetBatteryLevel(device: BluetoothDevice): Int {
         return try {
-            // Hidden API via reflection (works on many devices)
             val method: Method = device.javaClass.getMethod("getBatteryLevel")
             val level = method.invoke(device) as? Int ?: -1
             if (level in 0..100) level else -1
-        } catch (_: Exception) {
-            -1
-        }
+        } catch (_: Exception) { -1 }
     }
 
     private fun checkBtPermissions(ctx: Context): Boolean {
@@ -387,8 +361,7 @@ class DeviceViewModel : ViewModel() {
         _uiState.update { state ->
             val exists = state.scannedDevices.any { it.address == info.address } ||
                     state.btDevices.any { it.address == info.address }
-            if (exists) state
-            else state.copy(scannedDevices = state.scannedDevices + info)
+            if (exists) state else state.copy(scannedDevices = state.scannedDevices + info)
         }
     }
 
@@ -411,9 +384,7 @@ class DeviceViewModel : ViewModel() {
     }
 
     fun stopScan() {
-        try {
-            bluetoothAdapter?.cancelDiscovery()
-        } catch (_: SecurityException) {}
+        try { bluetoothAdapter?.cancelDiscovery() } catch (_: SecurityException) {}
         _uiState.update { it.copy(isScanning = false) }
     }
 
@@ -435,58 +406,47 @@ class DeviceViewModel : ViewModel() {
     @SuppressLint("MissingPermission")
     fun connectDevice(info: BtDeviceInfo) {
         viewModelScope.launch {
-            val ctx = context ?: return@launch
+            val ctx = appContext ?: return@launch
             try {
                 val device = bluetoothAdapter?.getRemoteDevice(info.address) ?: return@launch
 
-                // 1. Ensure bonded
                 if (device.bondState != BluetoothDevice.BOND_BONDED) {
                     device.createBond()
                     showMsg("Сопряжение…")
                     delay(3000)
                 }
 
-                // 2. Try hidden connect methods via reflection (works on many firmwares)
-                var connected = false
+                var ok = false
                 try {
-                    val method = device.javaClass.getMethod("connect")
-                    method.invoke(device)
-                    connected = true
-                } catch (_: Exception) {}
-
-                // 3. A2DP / Headset connect via reflection on proxy
-                try {
-                    a2dpProxy?.let { proxy ->
-                        val m = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java)
-                        m.invoke(proxy, device)
-                        connected = true
-                    }
+                    device.javaClass.getMethod("connect").invoke(device)
+                    ok = true
                 } catch (_: Exception) {}
 
                 try {
-                    headsetProxy?.let { proxy ->
-                        val m = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java)
-                        m.invoke(proxy, device)
-                        connected = true
-                    }
+                    a2dpProxy?.javaClass?.getMethod("connect", BluetoothDevice::class.java)?.invoke(a2dpProxy, device)
+                    ok = true
                 } catch (_: Exception) {}
 
-                // 4. AudioManager force Bluetooth
+                try {
+                    headsetProxy?.javaClass?.getMethod("connect", BluetoothDevice::class.java)?.invoke(headsetProxy, device)
+                    ok = true
+                } catch (_: Exception) {}
+
                 try {
                     val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     am.mode = AudioManager.MODE_NORMAL
-                    am.isBluetoothScoOn = true
                     am.startBluetoothSco()
+                    am.isBluetoothScoOn = true
                     am.isSpeakerphoneOn = false
                 } catch (_: Exception) {}
 
-                showMsg(if (connected) "Команда подключения отправлена" else "Попытка подключения…")
+                showMsg(if (ok) "Команда подключения отправлена" else "Попытка подключения…")
                 delay(1500)
                 refreshBluetooth()
             } catch (e: SecurityException) {
                 showMsg("Нет разрешения BLUETOOTH_CONNECT")
             } catch (e: Exception) {
-                showMsg("Ошибка: ${e.message?.take(40)}")
+                showMsg("Ошибка: ${e.message?.take(50)}")
             }
         }
     }
@@ -494,32 +454,20 @@ class DeviceViewModel : ViewModel() {
     @SuppressLint("MissingPermission")
     fun disconnectDevice(info: BtDeviceInfo) {
         viewModelScope.launch {
-            val ctx = context ?: return@launch
+            val ctx = appContext ?: return@launch
             try {
                 val device = bluetoothAdapter?.getRemoteDevice(info.address) ?: return@launch
 
-                // Reflection disconnect on device
-                try {
-                    val method = device.javaClass.getMethod("disconnect")
-                    method.invoke(device)
-                } catch (_: Exception) {}
+                try { device.javaClass.getMethod("disconnect").invoke(device) } catch (_: Exception) {}
 
-                // A2DP / Headset disconnect
                 try {
-                    a2dpProxy?.let { proxy ->
-                        val m = proxy.javaClass.getMethod("disconnect", BluetoothDevice::class.java)
-                        m.invoke(proxy, device)
-                    }
+                    a2dpProxy?.javaClass?.getMethod("disconnect", BluetoothDevice::class.java)?.invoke(a2dpProxy, device)
                 } catch (_: Exception) {}
 
                 try {
-                    headsetProxy?.let { proxy ->
-                        val m = proxy.javaClass.getMethod("disconnect", BluetoothDevice::class.java)
-                        m.invoke(proxy, device)
-                    }
+                    headsetProxy?.javaClass?.getMethod("disconnect", BluetoothDevice::class.java)?.invoke(headsetProxy, device)
                 } catch (_: Exception) {}
 
-                // Stop SCO
                 try {
                     val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                     am.stopBluetoothSco()
@@ -530,7 +478,7 @@ class DeviceViewModel : ViewModel() {
                 delay(1200)
                 refreshBluetooth()
             } catch (e: Exception) {
-                showMsg("Ошибка отключения: ${e.message?.take(40)}")
+                showMsg("Ошибка: ${e.message?.take(50)}")
             }
         }
     }
@@ -540,51 +488,50 @@ class DeviceViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val device = bluetoothAdapter?.getRemoteDevice(info.address) ?: return@launch
-                val method = device.javaClass.getMethod("removeBond")
-                val result = method.invoke(device) as? Boolean ?: false
+                val result = device.javaClass.getMethod("removeBond").invoke(device) as? Boolean ?: false
                 showMsg(if (result) "Устройство забыто" else "Не удалось забыть")
                 delay(800)
                 refreshBluetooth()
             } catch (e: Exception) {
-                showMsg("Ошибка: ${e.message?.take(40)}")
+                showMsg("Ошибка: ${e.message?.take(50)}")
             }
         }
     }
 
     fun requestUsbPermission(info: UsbDeviceInfo) {
-        val ctx = context ?: return
-        val usbManager = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
-        val device = usbManager.deviceList.values.find { it.deviceId == info.deviceId } ?: return
-        // Permission must be requested with PendingIntent from Activity — simplified toast
-        showMsg("Откройте системный диалог USB (если появится) или переподключите устройство")
-        // Full permission flow needs Activity Result — user can grant when system asks
+        showMsg("Переподключите USB-устройство — система запросит разрешение")
     }
 
-    fun selectBt(device: BtDeviceInfo?) {
-        _uiState.update { it.copy(selectedBtDevice = device) }
-    }
-
-    fun selectUsb(device: UsbDeviceInfo?) {
-        _uiState.update { it.copy(selectedUsbDevice = device) }
-    }
+    fun selectBt(device: BtDeviceInfo?) = _uiState.update { it.copy(selectedBtDevice = device) }
+    fun selectUsb(device: UsbDeviceInfo?) = _uiState.update { it.copy(selectedUsbDevice = device) }
 
     fun openSystemBluetoothSettings() {
-        context?.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        appContext?.startActivity(
+            Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 
     fun openSystemSoundSettings() {
-        context?.startActivity(Intent(Settings.ACTION_SOUND_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        appContext?.startActivity(
+            Intent(Settings.ACTION_SOUND_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+
+    fun openSystemSettings() {
+        appContext?.startActivity(
+            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 
     private fun showMsg(msg: String) {
         _uiState.update { it.copy(statusMessage = msg) }
-        context?.let { Toast.makeText(it, msg, Toast.LENGTH_SHORT).show() }
+        appContext?.let { Toast.makeText(it, msg, Toast.LENGTH_SHORT).show() }
     }
 
     override fun onCleared() {
         super.onCleared()
         try {
-            context?.unregisterReceiver(receiver)
+            appContext?.unregisterReceiver(receiver)
             bluetoothAdapter?.let { adapter ->
                 a2dpProxy?.let { adapter.closeProfileProxy(BluetoothProfile.A2DP, it) }
                 headsetProxy?.let { adapter.closeProfileProxy(BluetoothProfile.HEADSET, it) }
@@ -592,8 +539,6 @@ class DeviceViewModel : ViewModel() {
         } catch (_: Exception) {}
     }
 }
-
-/* ===================== UI ===================== */
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -611,8 +556,11 @@ fun DeviceManagerApp(vm: DeviceViewModel = viewModel()) {
                     Column {
                         Text("Device Manager", fontWeight = FontWeight.Bold)
                         if (state.statusMessage.isNotEmpty()) {
-                            Text(state.statusMessage, style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                state.statusMessage,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
                 },
@@ -626,16 +574,15 @@ fun DeviceManagerApp(vm: DeviceViewModel = viewModel()) {
     ) { padding ->
         Column(Modifier = Modifier.padding(padding).fillMaxSize()) {
             TabRow(selectedTabIndex = tab) {
-                Tab(selected = tab == 0, onClick = { tab = 0 },
-                    text = { Text("Bluetooth") }, icon = { Icon(Icons.Default.Bluetooth, null) })
-                Tab(selected = tab == 1, onClick = { tab = 1 },
-                    text = { Text("USB") }, icon = { Icon(Icons.Default.Usb, null) })
-                Tab(selected = tab == 2, onClick = { tab = 2 },
-                    text = { Text("Аудио") }, icon = { Icon(Icons.Default.VolumeUp, null) })
-                Tab(selected = tab == 3, onClick = { tab = 3 },
-                    text = { Text("Ещё") }, icon = { Icon(Icons.Default.Settings, null) })
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("BT") },
+                    icon = { Icon(Icons.Default.Bluetooth, null) })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("USB") },
+                    icon = { Icon(Icons.Default.Usb, null) })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Аудио") },
+                    icon = { Icon(Icons.Default.VolumeUp, null) })
+                Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("Ещё") },
+                    icon = { Icon(Icons.Default.Settings, null) })
             }
-
             when (tab) {
                 0 -> BluetoothTab(state, vm)
                 1 -> UsbTab(state, vm)
@@ -645,19 +592,13 @@ fun DeviceManagerApp(vm: DeviceViewModel = viewModel()) {
         }
     }
 
-    // Detail bottom sheets
-    state.selectedBtDevice?.let { dev ->
-        BtDeviceSheet(dev, vm) { vm.selectBt(null) }
-    }
-    state.selectedUsbDevice?.let { dev ->
-        UsbDeviceSheet(dev, vm) { vm.selectUsb(null) }
-    }
+    state.selectedBtDevice?.let { BtDeviceSheet(it, vm) { vm.selectBt(null) } }
+    state.selectedUsbDevice?.let { UsbDeviceSheet(it, vm) { vm.selectUsb(null) } }
 }
 
 @Composable
 fun BluetoothTab(state: UiState, vm: DeviceViewModel) {
-    Column(Modifier = Modifier.fillMaxSize().padding(12.dp)) {
-        // Status + actions
+    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Icon(
                 if (state.bluetoothEnabled) Icons.Default.Bluetooth else Icons.Default.BluetoothDisabled,
@@ -666,58 +607,66 @@ fun BluetoothTab(state: UiState, vm: DeviceViewModel) {
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                if (!state.hasBtPermissions) "Нет разрешений"
-                else if (state.bluetoothEnabled) "Bluetooth включён"
-                else "Bluetooth выключен",
+                when {
+                    !state.hasBtPermissions -> "Нет разрешений"
+                    state.bluetoothEnabled -> "Bluetooth включён"
+                    else -> "Bluetooth выключен"
+                },
                 style = MaterialTheme.typography.bodyMedium
             )
-            Spacer(Modifier.weight(1f))
+            Spacer(modifier.weight(1f))
             if (state.isScanning) {
-                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(8.dp))
+                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                Spacer(modifier.width(8.dp))
                 TextButton(onClick = { vm.stopScan() }) { Text("Стоп") }
             } else {
                 FilledTonalButton(onClick = { vm.startScan() }) {
                     Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Сканировать")
+                    Text("Скан")
                 }
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(modifier.height(12.dp))
 
         if (!state.hasBtPermissions) {
-            EmptyState(Icons.Default.Lock, "Выдайте разрешения Bluetooth и Location")
+            EmptyState(Icons.Default.Lock, "Выдайте Bluetooth и Location")
             return
         }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Bonded
             item {
-                Text("Спаренные устройства (${state.btDevices.size})",
-                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Спаренные (${state.btDevices.size})",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
             if (state.btDevices.isEmpty()) {
                 item { Text("Нет спаренных устройств", color = Color.Gray) }
             }
             items(state.btDevices, key = { it.address }) { dev ->
-                BtDeviceCard(dev,
+                BtDeviceCard(
+                    dev,
                     onClick = { vm.selectBt(dev) },
                     onConnect = { vm.connectDevice(dev) },
                     onDisconnect = { vm.disconnectDevice(dev) }
                 )
             }
 
-            // Scanned
             if (state.scannedDevices.isNotEmpty() || state.isScanning) {
                 item {
-                    Spacer(Modifier.height(8.dp))
-                    Text("Найденные рядом (${state.scannedDevices.size})",
-                        style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Spacer(modifier.height(8.dp))
+                    Text(
+                        "Найденные (${state.scannedDevices.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
                 items(state.scannedDevices, key = { "s_${it.address}" }) { dev ->
-                    BtDeviceCard(dev,
+                    BtDeviceCard(
+                        dev,
                         onClick = { vm.selectBt(dev) },
                         onConnect = { vm.pairDevice(dev.address) },
                         onDisconnect = {},
@@ -749,8 +698,10 @@ fun BtDeviceCard(
             modifier = Modifier.padding(12.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(device.icon, null, modifier = Modifier.size(36.dp),
-                tint = if (device.isConnected) MaterialTheme.colorScheme.primary else Color.Gray)
+            Icon(
+                device.icon, null, modifier = Modifier.size(36.dp),
+                tint = if (device.isConnected) MaterialTheme.colorScheme.primary else Color.Gray
+            )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(device.name, fontWeight = FontWeight.Medium, maxLines = 1)
@@ -758,7 +709,11 @@ fun BtDeviceCard(
                 Text(device.address, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 Row {
                     Text(
-                        if (device.isConnected) "● Подключено" else if (device.isBonded) "Спарено" else "Не спарено",
+                        when {
+                            device.isConnected -> "● Подключено"
+                            device.isBonded -> "Спарено"
+                            else -> "Не спарено"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = if (device.isConnected) MaterialTheme.colorScheme.primary else Color.Gray
                     )
@@ -788,13 +743,20 @@ fun BtDeviceCard(
 @Composable
 fun BtDeviceSheet(device: BtDeviceInfo, vm: DeviceViewModel, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState())) {
+        Column(modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState())) {
             Text(device.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
+            Spacer(modifier.height(8.dp))
             DetailRow("Адрес", device.address)
             DetailRow("Тип", device.type)
             DetailRow("Класс", device.deviceClass)
-            DetailRow("Статус", if (device.isConnected) "Подключено" else if (device.isBonded) "Спарено" else "Не спарено")
+            DetailRow(
+                "Статус",
+                when {
+                    device.isConnected -> "Подключено"
+                    device.isBonded -> "Спарено"
+                    else -> "Не спарено"
+                }
+            )
             if (device.batteryLevel in 0..100) DetailRow("Батарея", "${device.batteryLevel}%")
             if (device.uuids.isNotEmpty()) {
                 Text("UUID / Сервисы", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -802,7 +764,7 @@ fun BtDeviceSheet(device: BtDeviceInfo, vm: DeviceViewModel, onDismiss: () -> Un
                     Text(it, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 }
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (device.isConnected) {
                     Button(onClick = { vm.disconnectDevice(device); onDismiss() }, modifier = Modifier.weight(1f)) {
@@ -823,7 +785,7 @@ fun BtDeviceSheet(device: BtDeviceInfo, vm: DeviceViewModel, onDismiss: () -> Un
                     }
                 }
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(modifier.height(24.dp))
         }
     }
 }
@@ -834,17 +796,23 @@ fun UsbTab(state: UiState, vm: DeviceViewModel) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Usb, null)
             Spacer(Modifier.width(8.dp))
-            Text("Подключённые USB-устройства (${state.usbDevices.size})",
-                style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.weight(1f))
+            Text(
+                "USB-устройства (${state.usbDevices.size})",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier.weight(1f))
             IconButton(onClick = { vm.refreshUsb() }) {
                 Icon(Icons.Default.Refresh, null)
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(modifier.height(12.dp))
 
         if (state.usbDevices.isEmpty()) {
-            EmptyState(Icons.Default.Usb, "Нет подключённых USB-устройств\nПодключите OTG-кабель / наушники / накопитель")
+            EmptyState(
+                Icons.Default.Usb,
+                "Нет подключённых USB-устройств\nПодключите OTG / наушники / флешку"
+            )
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(state.usbDevices, key = { it.deviceId }) { dev ->
@@ -871,16 +839,20 @@ fun UsbDeviceCard(device: UsbDeviceInfo, onClick: () -> Unit) {
                 },
                 null, modifier = Modifier.size(36.dp)
             )
-            Spacer(Modifier.width(12.dp))
+            Spacer(modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(device.product, fontWeight = FontWeight.Medium)
                 Text(device.manufacturer, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                Text("${device.className} · VID:${device.vendorId.toString(16)} PID:${device.productId.toString(16)}",
-                    style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(
+                    "${device.className} · VID:0x${device.vendorId.toString(16)} PID:0x${device.productId.toString(16)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
                 Text(
                     if (device.hasPermission) "● Доступ разрешён" else "Нужно разрешение",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (device.hasPermission) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+                    color = if (device.hasPermission) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.tertiary
                 )
             }
         }
@@ -893,22 +865,22 @@ fun UsbDeviceSheet(device: UsbDeviceInfo, vm: DeviceViewModel, onDismiss: () -> 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.padding(24.dp)) {
             Text(device.product, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
+            Spacer(modifier.height(8.dp))
             DetailRow("Производитель", device.manufacturer)
-            DetailRow("Имя устройства", device.name)
+            DetailRow("Имя", device.name)
             DetailRow("Класс", device.className)
             DetailRow("Vendor ID", "0x${device.vendorId.toString(16).uppercase()}")
             DetailRow("Product ID", "0x${device.productId.toString(16).uppercase()}")
-            DetailRow("Интерфейсов", device.interfaceCount.toString())
-            DetailRow("Протокол", device.protocol.toString())
+            DetailRow("Интерфейсов", "${device.interfaceCount}")
+            DetailRow("Протокол", "${device.protocol}")
             DetailRow("Разрешение", if (device.hasPermission) "Есть" else "Нет")
-            Spacer(Modifier.height(16.dp))
+            Spacer(modifier.height(16.dp))
             if (!device.hasPermission) {
                 Button(onClick = { vm.requestUsbPermission(device) }, modifier = Modifier.fillMaxWidth()) {
                     Text("Запросить разрешение USB")
                 }
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(modifier.height(24.dp))
         }
     }
 }
@@ -918,26 +890,16 @@ fun AudioTab() {
     val context = LocalContext.current
     val am = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
-    var media by remember {
-        mutableFloatStateOf(am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() /
-                am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1))
+    fun vol(stream: Int): Float {
+        val max = am.getStreamMaxVolume(stream).coerceAtLeast(1)
+        return am.getStreamVolume(stream).toFloat() / max
     }
-    var call by remember {
-        mutableFloatStateOf(am.getStreamVolume(AudioManager.STREAM_VOICE_CALL).toFloat() /
-                am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL).coerceAtLeast(1))
-    }
-    var ring by remember {
-        mutableFloatStateOf(am.getStreamVolume(AudioManager.STREAM_RING).toFloat() /
-                am.getStreamMaxVolume(AudioManager.STREAM_RING).coerceAtLeast(1))
-    }
-    var notif by remember {
-        mutableFloatStateOf(am.getStreamVolume(AudioManager.STREAM_NOTIFICATION).toFloat() /
-                am.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION).coerceAtLeast(1))
-    }
-    var alarm by remember {
-        mutableFloatStateOf(am.getStreamVolume(AudioManager.STREAM_ALARM).toFloat() /
-                am.getStreamMaxVolume(AudioManager.STREAM_ALARM).coerceAtLeast(1))
-    }
+
+    var media by remember { mutableFloatStateOf(vol(AudioManager.STREAM_MUSIC)) }
+    var call by remember { mutableFloatStateOf(vol(AudioManager.STREAM_VOICE_CALL)) }
+    var ring by remember { mutableFloatStateOf(vol(AudioManager.STREAM_RING)) }
+    var notif by remember { mutableFloatStateOf(vol(AudioManager.STREAM_NOTIFICATION)) }
+    var alarm by remember { mutableFloatStateOf(vol(AudioManager.STREAM_ALARM)) }
     var speaker by remember { mutableStateOf(am.isSpeakerphoneOn) }
     var sco by remember { mutableStateOf(am.isBluetoothScoOn) }
 
@@ -952,32 +914,42 @@ fun AudioTab() {
 
         VolumeSlider("Медиа", Icons.Default.MusicNote, media) {
             media = it
-            am.setStreamVolume(AudioManager.STREAM_MUSIC,
-                (it * am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)).toInt(), 0)
+            am.setStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                (it * am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)).toInt(), 0
+            )
         }
         VolumeSlider("Звонок", Icons.Default.Call, call) {
             call = it
-            am.setStreamVolume(AudioManager.STREAM_VOICE_CALL,
-                (it * am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)).toInt(), 0)
+            am.setStreamVolume(
+                AudioManager.STREAM_VOICE_CALL,
+                (it * am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)).toInt(), 0
+            )
         }
         VolumeSlider("Рингтон", Icons.Default.Notifications, ring) {
             ring = it
-            am.setStreamVolume(AudioManager.STREAM_RING,
-                (it * am.getStreamMaxVolume(AudioManager.STREAM_RING)).toInt(), 0)
+            am.setStreamVolume(
+                AudioManager.STREAM_RING,
+                (it * am.getStreamMaxVolume(AudioManager.STREAM_RING)).toInt(), 0
+            )
         }
         VolumeSlider("Уведомления", Icons.Default.NotificationsActive, notif) {
             notif = it
-            am.setStreamVolume(AudioManager.STREAM_NOTIFICATION,
-                (it * am.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION)).toInt(), 0)
+            am.setStreamVolume(
+                AudioManager.STREAM_NOTIFICATION,
+                (it * am.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION)).toInt(), 0
+            )
         }
         VolumeSlider("Будильник", Icons.Default.Alarm, alarm) {
             alarm = it
-            am.setStreamVolume(AudioManager.STREAM_ALARM,
-                (it * am.getStreamMaxVolume(AudioManager.STREAM_ALARM)).toInt(), 0)
+            am.setStreamVolume(
+                AudioManager.STREAM_ALARM,
+                (it * am.getStreamMaxVolume(AudioManager.STREAM_ALARM)).toInt(), 0
+            )
         }
 
         HorizontalDivider()
-        Text("Маршрутизация аудио", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text("Маршрутизация", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Динамик (speaker)", modifier = Modifier.weight(1f))
@@ -987,7 +959,7 @@ fun AudioTab() {
             })
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Bluetooth SCO (гарнитура)", modifier = Modifier.weight(1f))
+            Text("Bluetooth SCO", modifier = Modifier.weight(1f))
             Switch(checked = sco, onCheckedChange = {
                 sco = it
                 if (it) {
@@ -1001,21 +973,17 @@ fun AudioTab() {
         }
 
         Text(
-            "Режим: ${when (am.mode) {
-                AudioManager.MODE_NORMAL -> "Normal"
-                AudioManager.MODE_RINGTONE -> "Ringtone"
-                AudioManager.MODE_IN_CALL -> "In Call"
-                AudioManager.MODE_IN_COMMUNICATION -> "Communication"
-                else -> am.mode.toString()
-            }}",
-            style = MaterialTheme.typography.bodySmall, color = Color.Gray
-        )
-
-        HorizontalDivider()
-        Text("Эквалайзер (системный)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text(
-            "Полноценный EQ зависит от устройства. Можно открыть системные звуковые настройки.",
-            style = MaterialTheme.typography.bodySmall, color = Color.Gray
+            "Режим AudioManager: ${
+                when (am.mode) {
+                    AudioManager.MODE_NORMAL -> "Normal"
+                    AudioManager.MODE_RINGTONE -> "Ringtone"
+                    AudioManager.MODE_IN_CALL -> "In Call"
+                    AudioManager.MODE_IN_COMMUNICATION -> "Communication"
+                    else -> am.mode.toString()
+                }
+            }",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.Gray
         )
     }
 }
@@ -1027,7 +995,7 @@ fun VolumeSlider(label: String, icon: ImageVector, value: Float, onChange: (Floa
             Icon(icon, null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
             Text(label, style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.weight(1f))
+            Spacer(modifier.weight(1f))
             Text("${(value * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
         }
         Slider(value = value, onValueChange = onChange)
@@ -1044,44 +1012,34 @@ fun ExtraSettingsTab(vm: DeviceViewModel) {
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text("Системные настройки", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-        SettingsButton(Icons.Default.Bluetooth, "Настройки Bluetooth") { vm.openSystemBluetoothSettings() }
+        SettingsButton(Icons.Default.Bluetooth, "Bluetooth") { vm.openSystemBluetoothSettings() }
         SettingsButton(Icons.Default.VolumeUp, "Звук и вибрация") { vm.openSystemSoundSettings() }
-        SettingsButton(Icons.Default.Settings, "Все настройки") {
-            vm.contextStart { Intent(Settings.ACTION_SETTINGS) }
-        }
+        SettingsButton(Icons.Default.Settings, "Все настройки") { vm.openSystemSettings() }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
         Text("О приложении", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Text(
             "Device Manager — расширенное управление Bluetooth и USB.\n\n" +
-            "• Подключение / отключение профилей A2DP и Headset (через reflection)\n" +
-            "• Сканирование и сопряжение\n" +
-            "• Забыть устройство\n" +
-            "• Список USB (OTG) устройств с классами\n" +
-            "• Полное управление громкостями и маршрутизацией аудио\n\n" +
-            "Ограничения Android: некоторые действия (особенно принудительное подключение A2DP) " +
-            "зависят от прошивки и могут требовать системных привилегий.",
-            style = MaterialTheme.typography.bodySmall, color = Color.Gray
+                "• Подключение / отключение A2DP и Headset (reflection)\n" +
+                "• Сканирование и сопряжение\n" +
+                "• Забыть устройство (removeBond)\n" +
+                "• Список USB (OTG) с классами и VID/PID\n" +
+                "• Все потоки громкости + speaker / SCO\n\n" +
+                "Ограничение Android: принудительное подключение профилей " +
+                "зависит от прошивки. На части устройств работает через hidden API.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.Gray
         )
     }
-}
-
-// Helper to start activity from VM context
-private fun DeviceViewModel.contextStart(intentBuilder: () -> Intent) {
-    // accessed via reflection-like pattern — use open methods already defined
 }
 
 @Composable
 fun SettingsButton(icon: ImageVector, label: String, onClick: () -> Unit) {
     OutlinedCard(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null)
-            Spacer(Modifier.width(16.dp))
+            Spacer(modifier.width(16.dp))
             Text(label, modifier = Modifier.weight(1f))
             Icon(Icons.Default.ChevronRight, null)
         }
@@ -1103,7 +1061,7 @@ fun EmptyState(icon: ImageVector, message: String) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(icon, null, modifier = Modifier.size(64.dp), tint = Color.Gray.copy(alpha = 0.5f))
-        Spacer(Modifier.height(16.dp))
+        Spacer(modifier.height(16.dp))
         Text(message, color = Color.Gray, style = MaterialTheme.typography.bodyLarge)
     }
 }
