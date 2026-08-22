@@ -1,79 +1,59 @@
-# Android Bluetooth Manager 🎧📱
+# Device Manager 🎧🔌
 
-**Приложение для расширенного управления подключаемыми Bluetooth-устройствами и наушниками на Android**
+**Расширенное управление Bluetooth-устройствами, наушниками и USB (OTG) на Android**
 
 ## Возможности
 
-- 📋 Список всех спаренных Bluetooth-устройств
-- 🔋 Отображение уровня батареи (где поддерживается системой)
-- 🔗 Быстрое подключение / отключение устройств
-- 🔊 Управление громкостью медиа и звонков
-- 🎵 Медиа-контролы (play/pause, next/prev)
-- 📶 Статус подключения в реальном времени
-- 🛡️ Современные runtime-разрешения (Android 12+)
-- 🎨 Красивый Material 3 интерфейс на Jetpack Compose
+### Bluetooth
+- Список всех спаренных устройств с типом (наушники, телефон, часы…)
+- Статус подключения (A2DP / Headset)
+- **Подключить / Отключить** через hidden API (reflection) — не только «откройте системные настройки»
+- Сканирование устройств рядом
+- Сопряжение (pair) и «Забыть» (removeBond)
+- Батарея (где доступно через getBatteryLevel)
+- UUID / сервисы устройства
+- Детальная карточка устройства
 
-## Скриншоты / Демо
+### USB (OTG)
+- Список всех подключённых USB-устройств
+- Класс устройства (аудио, HID, накопитель, хаб…)
+- Vendor ID / Product ID
+- Производитель и имя
+- Статус разрешения доступа
 
-Приложение показывает список устройств, их тип (наушники, колонка, телефон и т.д.), статус подключения и батарею.
+### Аудио
+- Громкость: медиа, звонок, рингтон, уведомления, будильник
+- Переключатель динамика (speaker)
+- Bluetooth SCO (гарнитура)
+- Текущий режим AudioManager
 
-## Как собрать APK
+### Ещё
+- Быстрый переход в системные настройки Bluetooth / Звук / Общие
 
-### Самый простой способ (рекомендуется)
+## Сборка APK (GitHub Actions)
 
-1. Установите [Android Studio](https://developer.android.com/studio) (Hedgehog или новее).
-2. File → Open → выберите папку этого репозитория.
-3. Дождитесь синхронизации Gradle.
-4. Build → Build Bundle(s) / APK(s) → Build APK(s).
-5. APK появится в `app/build/outputs/apk/debug/app-debug.apk`.
+При каждом push в `main` автоматически собирается debug APK.
 
-### Через командную строку (если установлен Android SDK)
+1. Открой [Actions](https://github.com/ivanivorontsov-sudo/AndroidBluetoothManager/actions)
+2. Выбери последний успешный **Build APK**
+3. Скачай артефакт **BluetoothManager-debug**
 
+Или локально:
 ```bash
 ./gradlew assembleDebug
 ```
 
-Готовый APK: `app/build/outputs/apk/debug/app-debug.apk`
+## Важно об ограничениях Android
 
-### Release-сборка (подписанный APK)
+Полный контроль профилей A2DP/HFP без системных привилегий на части прошивок ограничен. Приложение использует:
+- публичные API где возможно
+- reflection на `connect` / `disconnect` / `removeBond` / `getBatteryLevel`
+- AudioManager SCO
 
-1. Создайте keystore:
-   ```bash
-   keytool -genkey -v -keystore my-release-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias bluetoothmanager
-   ```
-2. Добавьте в `app/build.gradle.kts` секцию `signingConfigs` и укажите пути.
-3. `./gradlew assembleRelease`
+На многих устройствах подключение/отключение из приложения **работает**. На некоторых (особенно с жёстким OEM) система может игнорировать команду — тогда остаётся системный Bluetooth.
 
-## Требования
-
-- minSdk 26 (Android 8.0)
-- targetSdk 34
-- Kotlin 1.9+
-- Jetpack Compose
-
-## Разрешения
-
-Приложение запрашивает:
-- `BLUETOOTH_CONNECT`
-- `BLUETOOTH_SCAN`
-- `ACCESS_FINE_LOCATION` (для сканирования на старых версиях Android)
-
-## Архитектура
-
-- **UI**: Jetpack Compose + Material 3
-- **Bluetooth**: `BluetoothAdapter`, `BluetoothDevice`, `BluetoothHeadset`, `BluetoothA2dp`
-- **Архитектура**: простой MVVM (ViewModel + StateFlow)
-
-## Ограничения
-
-Полный контроль ANC, EQ, жестов и специфических функций наушников (Sony, Bose, Huawei, Samsung и т.д.) требует reverse-engineering проприетарных протоколов каждой марки. Это приложение использует только стандартные Android Bluetooth API.
-
-Для глубокой поддержки конкретных моделей смотрите проекты вроде [FreeBuddy](https://github.com/TheLastGimbus/FreeBuddy).
+ANC, EQ и жесты конкретных брендов (Sony, Bose, Huawei…) требуют reverse-engineering проприетарных протоколов — это отдельный уровень сложности.
 
 ## Лицензия
 
 MIT
-
----
-
-Сделано с помощью Grok 🚀
