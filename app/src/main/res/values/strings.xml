@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bluetooth Manager</string>
+    <string name="no_devices">Нет спаренных устройств</string>
+    <string name="permission_required">Нужны разрешения Bluetooth</string>
+    <string name="bluetooth_disabled">Bluetooth выключен</string>
+    <string name="connected">Подключено</string>
+    <string name="disconnected">Отключено</string>
+    <string name="battery">Батарея: %1$d%%</string>
+    <string name="unknown_battery">Батарея: —</string>
+    <string name="connect">Подключить</string>
+    <string name="disconnect">Отключить</string>
+    <string name="refresh">Обновить</string>
+</resources>
